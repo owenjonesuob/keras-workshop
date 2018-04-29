@@ -1,0 +1,231 @@
+---
+title: "Deep learning with Keras"
+output: html_notebook
+---
+
+
+## Deep learning with Keras: Chest accelerometer data
+
+Dataset from https://archive.ics.uci.edu/ml/datasets/Activity+Recognition+from+Single+Chest-Mounted+Accelerometer
+
+
+```{r}
+set.seed(123)
+```
+
+Visual representation of chopped. Each observation (row) has 260 time points (columns) and 5 features (layers).
+![](../tensor.png)
+
+```{r}
+library(keras)
+
+iris_onehot <- to_categorical(iris$Species)[, -1]
+```
+
+
+```{r}
+
+model <- keras_model_sequential()
+
+model %>%
+  layer_dense(10, activation = "sigmoid", input_shape = 4) %>%
+  layer_dense(3, activation = "softmax")
+```
+
+```{r}
+summary(model)
+```
+
+
+```{r}
+model %>%
+  compile(loss = "categorical_crossentropy", optimizer = "sgd", metrics = c("accuracy"))
+
+```
+
+```{r}
+model %>%
+  fit(as.matrix(iris[, -5]), iris_onehot, epochs = 5, batch_size = 20, validation_split = 0.2)
+```
+
+---
+
+## Identify a person based on gait
+
+```{r}
+walking <- readRDS("data/walking_data.rds")
+walking_labels <- readRDS("data/walking_labels.rds")
+```
+
+### Preparing the data
+
+```{r}
+m <- nrow(walking)
+
+indices <- sample(1:m, m)
+
+train_indices <- indices[1:floor(m*0.6)]
+val_indices <- indices[ceiling(m*0.6):floor(m*0.8)]
+test_indices <- indices[ceiling(m*0.8):m]
+```
+
+```{r}
+X_train <- walking[train_indices, , ]
+X_val <- walking[val_indices, , ]
+X_test <- walking[test_indices, , ]
+
+# We have 15 integer labels, but these need to be one-hot encoded
+# e.g. '4' becomes [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+y_train <- to_categorical(walking_labels[train_indices])
+y_val <- to_categorical(walking_labels[val_indices])
+y_test <- to_categorical(walking_labels[test_indices])
+```
+
+
+```{r}
+plot_series <- function(series) {
+  plot(series[, 1], type = "l", col = "red")
+  lines(series[, 2], col = "darkgreen")
+  lines(series[, 3], col = "blue")
+}
+
+plot_series(X_train[1, , ])
+```
+
+Can we tell between different people's data by eye?
+
+
+### The neural network
+
+```{r}
+# Initiate the model - we'll use a sequential model so we can add to it
+model <- keras_model_sequential()
+
+# Start with a convolutional layer:
+#  * filters: The number of "features" we want to learn; number of patterns to try to identify
+#  * kernel_size: The "window" to consider, i.e. we look at a rolling window captuiring [kernel_size] time points at once
+#  * strides: How many time steps to "roll forward" each time we move the window
+#  * activation: The activation function to use; convolutional layers typically use REctified Linear Unit function
+#  * input_shape: We're feeding in observations each of shape 260{time points}*3{directional acceleration features}
+model %>%
+    layer_conv_1d(filters = 40, kernel_size = 40, strides = 2, activation = "relu", input_shape = c(260, 3)) %>%
+    layer_max_pooling_1d(pool_size = 2) %>%
+    layer_conv_1d(filters = 40, kernel_size = 10, activation = "relu") %>%
+    layer_max_pooling_1d(pool_size = 2) %>%
+    layer_flatten() %>%
+    layer_dense(units = 100, activation = "sigmoid") %>%
+    layer_dense(units = 15, activation = "softmax")
+
+model
+```
+
+```{r}
+model %>%
+    compile(loss = "categorical_crossentropy", optimizer = "adam", metrics = c("accuracy"))
+```
+
+```{r}
+history <- model %>%
+    fit(X_train, y_train, epochs = 10, batch_size = 100, validation_data = list(X_val, y_val), verbose = 1)
+```
+
+At this point we could try to improve that cross-validation accuracy score, e.g. change network structure.
+
+
+## Reporting
+
+
+```{r}
+y_pred <- model %>%
+    # For some reason, even though this is R, we predict classes between 0 and 14...
+    predict_classes(X_test)
+
+
+classification_report <- function(target, predictions) {
+    
+    # Confusion matrix
+    confusion <- table(Actual = target, Predicted = predictions)
+
+    # Precision
+    precision <- diag(confusion) / colSums(confusion)
+
+    # Recall
+    recall <- diag(confusion) / rowSums(confusion)
+
+    # F1 score
+    f1 <- 2*precision*recall / (precision+recall)
+    
+    metrics <- data.frame("Precision" = precision,
+                          "Recall" = recall,
+                          "F1_score" = f1) %>%
+        round(4) %>%
+        rbind(c("---", "---", "---")) %>%
+        rbind(round(c(mean(precision), mean(recall), mean(f1)), 4))
+    
+    rownames(metrics) <- c(paste("Class", seq_along(f1)), "---", "Mean")
+    
+    list("performance_metrics" = metrics,
+         "confusion_matrix" = confusion)
+}
+
+
+classification_report(max.col(y_test) - 1, y_pred)
+```
+
+
+
+## Visualising features
+
+We can try to visualise the "features" of the time series which the convolutional layers of the net have learned to identify.
+
+```{r}
+plot_filter <- function(model, layer, k) {
+    
+    # Get weights from target filters in specified layer
+    weights <- get_weights(model$layers[[layer]])[[1]][, , k]
+    plot_series(weights)
+}
+
+
+model %>%
+    plot_filter(1, 1)
+
+model %>%
+    plot_filter(1, 12)
+
+# Up one more level of abstraction...
+model %>%
+    plot_filter(3, 1)
+```
+
+
+We can also see if there are any patterns in the autocorrelation plots which might suggest strong periodicity.
+
+
+```{r}
+plot_filter_corr <- function(model, layer, k) {
+    
+    weights <- get_weights(model$layers[[layer]])[[1]][, , k]
+
+    corrs <- apply(weights, 2, function(x) {
+        acf(x, lag.max = nrow(weights), plot = FALSE)[["acf"]]
+    })
+    
+    plot_series(corrs)
+}
+
+    
+model %>%
+    plot_filter_corr(1, 1)
+```
+
+
+
+```{r}
+model %>%
+    plot_filter(1, 1:6)
+
+model %>%
+    plot_filter_corr(1, 1:6)
+```
+
