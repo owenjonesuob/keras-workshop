@@ -1,0 +1,400 @@
+---
+title: "Deep learning with Keras"
+output: html_notebook
+---
+
+
+## Deep learning with Keras: Chest accelerometer data
+
+Dataset from https://archive.ics.uci.edu/ml/datasets/Activity+Recognition+from+Single+Chest-Mounted+Accelerometer
+
+
+```{r}
+set.seed(123)
+
+library(readr)
+library(dplyr)
+library(keras)
+```
+
+```{r}
+data_files <- list.files("../activity", pattern = "*.csv", full.names = TRUE)
+
+# Initialise array for data:
+#   Rows will be observations
+#   Columns will be:
+#   * Time point (sequential count integer)
+#   * x-, y-, z-directional accelerometer data time series (integer)
+#   * Activity label (1-7)
+#   * Person label (0-14)
+dataset <- data.frame()
+
+# Add data from each file in turn
+for (k in seq_along(data_files)) {
+    
+    cat("Reading file", k, "/", length(data_files), "\n")
+    
+    d <- read_csv(data_files[k], col_names = c("obs", "acc_x", "acc_y", "acc_z", "activity"), col_types = "ddddd")
+    
+    # Add a column with a label representing the person
+    d$person <- k
+    
+    dataset <- bind_rows(dataset, d)
+}
+```
+
+
+```{r}
+# Reshape data into 3 dimensions:
+#   0-dimension ("rows") is observations (1926896 in total)
+#   1-dimension ("columns") is time series values (260 = 5{seconds}*52{Hz} in total)
+#   2-dimension ("leaves") are as follows (5 in total):
+#     * 3 directions (x-, y-, z-acceleration)
+#     * Activity type labels
+#     * Person labels
+
+
+# We'll chop the time series into 260-length (5 second) sections every 52 points (every 1 second)
+m <- (nrow(dataset) - 208) %/% 52
+chopped <- array(0, dim = c(m, 260, 5))
+
+for (k in seq_len(m)) {
+    
+    start <- 52*(k-1) + 1
+    stop <- start + 259
+    
+    # If the count column's value at "stop" is smaller than at "start", we've changed person, so discard
+    # If the activity label column is not all the same, we have more than one activity in that section, so discard
+    if (dataset[stop, "obs"] < dataset[start, "obs"] ||
+        !all(dataset[start:stop, "activity"] == dataset[start, "activity"])) {
+        next
+    }
+    
+    # Else copy all but count column to the new data block
+    chopped[k, , ] <- as.matrix(dataset[start:stop, -1])
+}
+
+# Remove the extra rows, which will have person label 0
+chopped <- chopped[(chopped[, 1, 5] != 0), , ]
+```
+
+Visual representation of chopped. Each observation (row) has 260 time points (columns) and 5 features (layers).
+![](../tensor.png)
+
+
+```{r}
+#saveRDS(chopped, file = "activity.rds")
+```
+
+
+---
+
+## Identify a person based on gait
+
+```{r}
+# "walking" corresponds to activity label 4
+walking <- chopped[(chopped[, 1, 4] == 4), , ]
+```
+
+### Preparing the data
+
+```{r}
+m <- nrow(walking)
+
+indices <- sample(1:m, m)
+
+train_indices <- indices[1:floor(m*0.6)]
+val_indices <- indices[ceiling(m*0.6):floor(m*0.8)]
+test_indices <- indices[ceiling(m*0.8):m]
+```
+
+```{r}
+# Time series data is in layers 0 to 2
+# Neural nets need scaled and ideally 0-centred data
+X_train <- aperm(apply(walking[train_indices, , 1:3], c(1, 3), scale), c(2, 1, 3))
+X_val <- aperm(apply(walking[val_indices, , 1:3], c(1, 3), scale), c(2, 1, 3))
+X_test <- aperm(apply(walking[test_indices, , 1:3], c(1, 3), scale), c(2, 1, 3))
+
+# Person labels are in layer 5
+# We have 15 integer labels, but these need to be one-hot encoded
+# e.g. '4' becomes [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+y_train <- diag(15)[walking[train_indices, 1, 5], ]
+y_val <- diag(15)[walking[val_indices, 1, 5], ]
+y_test <- diag(15)[walking[test_indices, 1, 5], ]
+```
+
+
+```{r}
+# Check our data has been scaled properly
+library(ggplot2)
+
+
+# Define a plotting function for 2- and 3-D arrays
+plot_series <- function(series) {
+    
+    if (length(dim(series)) == 3) {
+        
+        series_df <- series %>%
+            # Trickery to "flatten" 3-D array: Effectively, takes each
+            # observation ("slice" of 1 row, all columns, all layers),
+            # transposes (series in columns; 1 column per filter), and the
+            # resulting matrices are stacked up - but keeping track of row
+            # number ("observation ID") in "id" and column number in "step"
+            #
+            #                                      V1 V2 id step
+            # e.g.  1 2 3\           becomes        1  a  1  1
+            #       4 5 6\                          2  b  1  2
+            #        \ \ \                          3  c  1  3
+            #            a b c\                     4  d  2  1
+            #            d e f\                     5  e  2  2
+            #             \ \ \                     6  f  2  3
+            aperm(c(2, 1, 3)) %>%
+            matrix(nrow = prod(dim(series)[1:2])) %>%
+            cbind("id" = rep(seq_len(dim(series)[1]), each = dim(series)[2])) %>%
+            cbind("step" = rep(seq_len(dim(series)[2]), dim(series)[1])) %>%
+            as_data_frame()
+        
+    } else if (length(dim(series)) == 2) {
+        
+        series_df <- series %>%
+            cbind("id" = 1) %>%
+            cbind("step" = seq_len(dim(series)[1])) %>%
+            as_data_frame()
+        
+    } else {
+        
+        stop("Give one or more rows of an array, e.g. plot_series(X_train[1:2, , ])")
+    }
+    
+    # Convert to long format
+    series_df <- gather(series_df, key = filter, value = value, -step, -id)
+    
+    ggplot(series_df, aes(x = step, colour = filter)) +
+        # One line per filter
+        geom_line(aes(y = value)) +
+        labs(x = "Step", y = "") +
+        # One panel per observation ("per row of original data")
+        facet_wrap(~ id) +
+        theme_bw() +
+        theme(legend.position = "none")
+        
+}
+
+plot_series(X_train[1, , ])
+plot_series(X_train[1:4, , ])
+```
+
+
+
+Can we tell between different people's data by eye?
+
+Let's plot a few series for some different people.
+
+```{r}
+people <- c(1, 4, 9)
+
+for (p in people) {
+    idx <- which(max.col(y_train) == p)[1:4]
+    print(plot_series(X_train[idx, , ]) + ggtitle(paste("Person", p)))
+}
+```
+
+
+### The neural network
+
+```{r}
+library(keras)
+```
+
+```{r}
+# Initiate the model - we'll use a sequential model so we can add to it
+model <- keras_model_sequential()
+
+# Start with a convolutional layer:
+#  * filters: The number of "features" we want to learn; number of patterns to try to identify
+#  * kernel_size: The "window" to consider, i.e. we look at a rolling window captuiring [kernel_size] time points at once
+#  * strides: How many time steps to "roll forward" each time we move the window
+#  * activation: The activation function to use; convolutional layers typically use REctified Linear Unit function
+#  * input_shape: We're feeding in observations each of shape 260{time points}*3{directional acceleration features}
+model %>%
+    layer_conv_1d(filters = 40, kernel_size = 40, strides = 2, activation = "relu", input_shape = c(260, 3)) %>%
+    layer_conv_1d(filters = 40, kernel_size = 10, activation = "relu") %>%
+    layer_max_pooling_1d(pool_size = 2) %>%
+    layer_flatten() %>%
+    layer_dense(units = 100, activation = "sigmoid") %>%
+    layer_dense(units = 15, activation = "softmax")
+
+model
+```
+
+```{r}
+model %>%
+    compile(loss = "categorical_crossentropy", optimizer = "adam", metrics = c("accuracy"))
+```
+
+```{r}
+history <- model %>%
+    fit(X_train, y_train, epochs = 15, batch_size = 128, validation_data = list(X_val, y_val), verbose = 1)
+```
+
+At this point we could try to improve that cross-validation accuracy score, e.g. change network structure.
+
+
+## Reporting
+
+
+```{r}
+y_pred <- model %>%
+    # For some reason, even though this is R, we predict classes between 0 and 14...
+    predict_classes(X_test) + 1
+
+
+classification_report <- function(target, predictions) {
+    
+    # Confusion matrix
+    confusion <- table(Actual = target, Predicted = predictions)
+
+    # Precision
+    precision <- diag(confusion) / colSums(confusion)
+
+    # Recall
+    recall <- diag(confusion) / rowSums(confusion)
+
+    # F1 score
+    f1 <- 2*precision*recall / (precision+recall)
+    
+    metrics <- data.frame("Precision" = precision,
+                          "Recall" = recall,
+                          "F1_score" = f1) %>%
+        round(4) %>%
+        rbind(c("---", "---", "---")) %>%
+        rbind(round(c(mean(precision), mean(recall), mean(f1)), 4))
+    
+    rownames(metrics) <- c(paste("Class", seq_along(f1)), "---", "Mean")
+    
+    list("performance_metrics" = metrics,
+         "confusion_matrix" = confusion)
+}
+
+
+classification_report(max.col(y_test), y_pred)
+```
+
+
+
+## Visualising features
+
+We can try to visualise the "features" of the time series which the convolutional layers of the net have learned to identify.
+
+```{r}
+plot_filter <- function(model, layer, filter) {
+    
+    # Get weights from target filters in specified layer
+    weights <- get_weights(model$layers[[layer]])[[1]][, , filter]
+    
+    # If we have a 3-D array (more than 1 filter), we need to swap some axes
+    # to make it work with the plot function
+    if (length(dim(weights)) == 3) {
+        
+        plot_series(aperm(weights, c(3, 1, 2)))
+        
+    } else {
+        
+        plot_series(weights)
+    }
+}
+
+model %>%
+    plot_filter(1, 1)
+
+model %>%
+    plot_filter(1, 1:12)
+
+model %>%
+    plot_filter(2, 1:4)
+```
+
+
+We can also see if there are any patterns in the autocorrelation/fourier transform plots which might suggest strong periodicity.
+
+
+```{r}
+plot_filter_corr <- function(model, layer, filter) {
+    
+    weights <- get_weights(model$layers[[layer]])[[1]][, , filter]
+    
+    if (length(dim(weights)) == 3) {
+        
+        corrs <- sapply(
+            # Calculate the cross-correlation of each series with itself
+            apply(weights, 2:3, function(x) {
+                ccf(x, x, lag.max = nrow(weights), plot = FALSE)
+            }),
+            `[[`,
+            "acf"
+        ) %>%
+            # Take only the second half (each series is symmetric)
+            .[(nrow(.) %/% 2 + 1):nrow(.), ] %>%
+            # Reshape into 3-D array again and transpose ready for plotting
+            array(dim = dim(weights)) %>%
+            aperm(c(3, 1, 2))
+        
+    } else {
+        
+        # Same, but no transposery at the end
+        corrs <- sapply(
+            apply(weights, 2, function(x) {
+                ccf(x, x, lag.max = nrow(weights), plot = FALSE)
+            }),
+            `[[`,
+            "acf"
+        ) %>%
+            .[(nrow(.) %/% 2 + 1):nrow(.), ]
+    }
+    
+    plot_series(corrs)
+}
+
+    
+model %>%
+    plot_filter_corr(1, 1:10)
+```
+
+```{r}
+plot_filter_fft <- function(model, layer, filter) {
+    
+    # Similar to plot_filter_corr
+    
+    weights <- get_weights(model$layers[[layer]])[[1]][, , filter]
+    
+    if (length(dim(weights)) == 3) {
+        
+        fourier <- abs(apply(weights, 2:3, fft)) %>%
+            aperm(c(3, 1, 2))
+        
+    } else {
+        
+        fourier <- abs(apply(weights, 2, fft))
+    }
+    
+    plot_series(fourier)
+}
+
+    
+model %>%
+    plot_filter_fft(1, 1:10)
+```
+
+
+
+```{r}
+model %>%
+    plot_filter(1, 1:6)
+
+model %>%
+    plot_filter_corr(1, 1:6)
+
+model %>%
+    plot_filter_fft(1, 1:6)
+```
+
