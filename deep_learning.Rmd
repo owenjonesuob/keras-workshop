@@ -11,6 +11,8 @@ Dataset from https://archive.ics.uci.edu/ml/datasets/Activity+Recognition+from+S
 
 ```{r}
 set.seed(123)
+
+iris <- iris[sample(nrow(iris)), ]
 ```
 
 Visual representation of chopped. Each observation (row) has 260 time points (columns) and 5 features (layers).
@@ -45,7 +47,7 @@ model %>%
 
 ```{r}
 model %>%
-  fit(as.matrix(iris[, -5]), iris_onehot, epochs = 5, batch_size = 20, validation_split = 0.2)
+  fit(as.matrix(scale(iris[, -5])), iris_onehot, epochs = 20, batch_size = 20, validation_split = 0.2)
 ```
 
 ---
