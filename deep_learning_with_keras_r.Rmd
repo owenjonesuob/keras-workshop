@@ -1,28 +1,81 @@
 ---
 title: "Deep learning with Keras"
+author: "Owen Jones | BathML | 3rd June 2018"
 output: html_notebook
 ---
 
 
-## Deep learning with Keras: Chest accelerometer data
-
-Dataset from https://archive.ics.uci.edu/ml/datasets/Activity+Recognition+from+Single+Chest-Mounted+Accelerometer
-
+Let's start at the very beginning...
 
 ```{r}
-set.seed(123)
-
-iris <- iris[sample(nrow(iris)), ]
+set.seed(2018)
 ```
 
-Visual representation of chopped. Each observation (row) has 260 time points (columns) and 5 features (layers).
-![](../tensor.png)
+OK yes, that is not the most interesting beginning. But it means that the results in this notebook are now reproducible (yay!). Good. Moving on.
+
+
+
+## What is Keras?
+
+> Keras is a high-level neural networks API, written in Python and capable of running on top of TensorFlow, CNTK, or Theano. -- **[keras.io](https://keras.io)**
+
+In other words, Keras makes it super easy to build neural networks. And that is exactly what we're going to do.
 
 ```{r}
 library(keras)
-
-iris_onehot <- to_categorical(iris$Species)[, -1]
 ```
+
+
+---
+
+
+## Cue the mandolin
+
+To get the hang of the Keras syntax, we're going to start off with a really simple network on a really simple dataset. You might have come across this one before...
+
+```{r}
+iris
+```
+
+The first four columns are numeric features (plant-related measurements... don't worry too much), and the fifth column is a label corresponding to the species, which is what we're going to use as our target.
+
+First we're just going to shuffle the rows, because at the moment they're in order (notice the label in the last column); in a minute we'll be splitting the data and we want a mixture of labels in each part.
+
+```{r}
+iris <- iris[sample(nrow(iris)), ]
+```
+
+Now we'll separate the labels, make them numeric, and subtract 1...
+
+```{r}
+iris_labels <- as.numeric(iris$Species) - 1
+```
+
+... because Keras needs the labels to be "one-hot encoded".
+
+**One-hot encoded label:** list out all the possible labels, and mark the one which is correct.
+
+Here, our label could be "setosa", "versicolor" or "virginica".  
+
+    Is it: s?ve?vi?
+    ---------------
+    s  => [1, 0, 0]
+    ve => [0, 1, 0]
+    vi => [0, 0, 1]
+
+Keras can do this for us...
+
+```{r}
+iris_onehot <- to_categorical(iris$Species)
+iris_onehot
+```
+
+Wait - what's with this "and subtract 1"?!
+
+Yes, we're using R, but behind the scenes Keras is actually sneakily running in Python. The `keras` package, which is just an interface through to Python, usually does a pretty good job of hiding all the Python things; but occasionally the mask slips a little! In R we start counting from 1, so when we convert our `Species` labels to numeric format, "setosa" becomes 1, "versicolor" becomes 2 and "virginica" becomes 3. But `to_categorical()` starts counting from 0, because... Python. So we have to play nice and reduce all our labels by 1.
+
+OK great - now we can get on with building a neural net!
+
 
 
 ```{r}
@@ -110,7 +163,7 @@ model <- keras_model_sequential()
 #  * activation: The activation function to use; convolutional layers typically use REctified Linear Unit function
 #  * input_shape: We're feeding in observations each of shape 260{time points}*3{directional acceleration features}
 model %>%
-    layer_conv_1d(filters = 40, kernel_size = 40, strides = 2, activation = "relu", input_shape = c(260, 3)) %>%
+    layer_conv_1d(filters = 40, kernel_size = 30, strides = 2, activation = "relu", input_shape = c(260, 3)) %>%
     layer_max_pooling_1d(pool_size = 2) %>%
     layer_conv_1d(filters = 40, kernel_size = 10, activation = "relu") %>%
     layer_max_pooling_1d(pool_size = 2) %>%
