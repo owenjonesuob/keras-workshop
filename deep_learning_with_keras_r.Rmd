@@ -17,6 +17,7 @@ OK yes, that is not the most interesting beginning. But it means that the result
 
 ## What is Keras?
 
+
 > Keras is a high-level neural networks API, written in Python and capable of running on top of TensorFlow, CNTK, or Theano. -- **[keras.io](https://keras.io)**
 
 In other words, Keras makes it super easy to build neural networks. And that is exactly what we're going to do.
@@ -30,6 +31,7 @@ library(keras)
 
 
 ## Cue the mandolin
+
 
 To get the hang of the Keras syntax, we're going to start off with a really simple network on a really simple dataset. You might have come across this one before...
 
@@ -66,7 +68,7 @@ Here, our label could be "setosa", "versicolor" or "virginica".
 Keras can do this for us...
 
 ```{r}
-iris_onehot <- to_categorical(iris$Species)
+iris_onehot <- to_categorical(iris_labels)
 iris_onehot
 ```
 
@@ -78,19 +80,47 @@ OK great - now we can get on with building a neural net!
 
 
 
+## A simple network
+
+
+We're going to build a "sequential" model. The clue's in the name - we start with an empty model, and sequentially add layers.
+
 ```{r}
-
 model <- keras_model_sequential()
+```
 
+There are plenty of layers to choose from, and we'll see some more exciting ones later on, but for now we'll stick with dense layers.
+
+For each dense layer, we specify:
+
+* The number of `units`, or how many neurons we want in the layer - the final layer will need to have 3 units, because we're classifying each input as one of 3 labels
+* The `activation` function we want to use - in a fully dense network, we tend to use sigmoid activation on the middle layers and softmax on the output layer
+
+And Keras takes care of everything else for us.
+
+Well, almost. For the very first layer in any model, we need to tell Keras what "shape" our input will be. We ignore the first dimension (the number of observations, or "rows"), because it can change without consequence; but we have to specify the other dimensions in a vector. Here, it's a size-1 vector, specifying that we have 4 features ("columns").
+
+To add to a model, we use the pipe operator (`%>%`) to tack on new layers, one at a time.
+
+```{r}
 model %>%
-  layer_dense(10, activation = "sigmoid", input_shape = 4) %>%
+  layer_dense(15, activation = "sigmoid", input_shape = 4) %>%
   layer_dense(3, activation = "softmax")
 ```
+
+Let's see what we've created...
 
 ```{r}
 summary(model)
 ```
 
+Looking good!
+
+There's one more thing to do before we can train our model though: now that we're happy with it, we have to lock it in by "compiling" it.
+
+At this point we also need to tell Keras which loss function (always categorical crossentropy for multiclass classification) and optimizer (stochastic gradient descent, or something more fancy) to use.
+
+We can also ask for a vector of metrics which we would like to see reported during training. These have nothing to do with the training process. The training process tries to minimise the loss function. _Usually_ that results in an increase in accuracy. Once again - the metrics have NOTHING to do with the training process. It's just nice to see them improving as we train!
 
 ```{r}
 model %>%
@@ -98,19 +128,86 @@ model %>%
 
 ```
 
+Now we can fit our model! We pass in our training data (remember that the label is in the last column, and we don't want to include that here!) and our one-hot encoded labels, as well as:
+
+* The number of `epochs` to train for, or the total number of times that all our training data gets passed through the network
+* A "batch size" - the parameters in the network get updated after each `batch_size` observations have been passed through
+* A proportion of the data which we'll set aside and use to assess our model's generalised performance (because a model can usually make great predictions about the data that's been used to train it, but it might not do so well on data it hasn't seen before)
+
+We also need to be a little bit careful about how the data is formatted. Somewhere in the background, `keras` is busy creating `numpy` arrays in Python - but in order to do this, it needs the R data to be in matrix form (when we used `to_categorical()` to create the one-hot labels earlier, `keras` did this for us).
+
 ```{r}
 model %>%
-  fit(as.matrix(scale(iris[, -5])), iris_onehot, epochs = 20, batch_size = 20, validation_split = 0.2)
+  fit(as.matrix(iris[, -5]), iris_onehot, epochs = 50, batch_size = 20, validation_split = 0.2)
 ```
+
+Notice that the loss keeps dropping, and the accuracy fluctuates but generally speaking increases for both the training and validation sets.
+
+So, that's the syntax, but let's be honest - it's a rubbish boring network and a rubbish boring dataset. Let's move on to something more interesting!
+
 
 ---
 
-## Identify a person based on gait
+
+## Look who's walking
+
+
+Let's load in the data we're going to use and check its dimensions, which is always a good thing to do.
+
+The original dataset is from [here](https://archive.ics.uci.edu/ml/datasets/Activity+Recognition+from+Single+Chest-Mounted+Accelerometer); see [walking_data_prep.R](data/walking_data_prep.R) for details on how this data was prepared for use here.
 
 ```{r}
 walking <- readRDS("data/walking_data.rds")
-walking_labels <- readRDS("data/walking_labels.rds")
+dim(walking)
 ```
+
+What? Three dimensions? Rows, columns and... huh??
+
+Don't panic. We have:
+* Observations - same as usual!
+* Timesteps - each column corresponds to one timestep, and together they form a time series. In this case we have 260 timesteps, forming a time series representing 5 seconds of measurements (because the samples were made at 52Hz).
+* Channels - at each timestep there are three values, one for the acceleration measurement in each of the x, y and z directions.
+
+As an important first step, let's work out how to visualise this data.
+
+We'll plot one observation at a time. One observation is one "row" of our dataset, but remember that every "row" is 3 channels deep. We'll plot each channel individually but on the same graph...
+
+```{r}
+plot_series <- function(series) {
+  # x-channel
+  plot(series[, 1], type = "l", col = "red")
+  # y-channel
+  lines(series[, 2], col = "darkgreen")
+  # z-channel
+  lines(series[, 3], col = "blue")
+}
+```
+
+So now we just pass in one observation from our data (one row, all timesteps and all channels).
+
+```{r}
+plot_series(walking[100, , ])
+```
+
+Great! But now we come to an interesting question... can we, intelligent humans, tell between different people's data by eye?
+
+Let's plot a few series for some different people - say, 5 series for 3 people.
+
+![](images/three_people.png)
+
+It doesn't look like this is an easy problem for us to solve, even with our big human brains. Maybe the computer will be able to give us a run for our money...
+
+So we have our data; now we need our labels. Each observation comes from one of 15 people so we can quickly check that we have 15 labels.
+
+
+```{r}
+walking_labels <- readRDS("data/walking_labels.rds")
+unique(walking_labels)
+```
+
+The time has come to split our data, but we'll have to use a slightly different tactic to the iris example earlier, because our labels are already separated.
+
+We'll split the row indices into three sets - a 60:20:20 split into training, cross-validation and test sets.
 
 ### Preparing the data
 
@@ -124,134 +221,188 @@ val_indices <- indices[ceiling(m*0.6):floor(m*0.8)]
 test_indices <- indices[ceiling(m*0.8):m]
 ```
 
+Now we can use these indices to partition both our data and our labels, remembering that we need to one-hot encode the labels!
+
 ```{r}
 X_train <- walking[train_indices, , ]
 X_val <- walking[val_indices, , ]
 X_test <- walking[test_indices, , ]
 
-# We have 15 integer labels, but these need to be one-hot encoded
-# e.g. '4' becomes [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 y_train <- to_categorical(walking_labels[train_indices])
 y_val <- to_categorical(walking_labels[val_indices])
 y_test <- to_categorical(walking_labels[test_indices])
 ```
 
 
-```{r}
-plot_series <- function(series) {
-  plot(series[, 1], type = "l", col = "red")
-  lines(series[, 2], col = "darkgreen")
-  lines(series[, 3], col = "blue")
-}
 
-plot_series(X_train[1, , ])
-```
+### A more interesting network
 
-Can we tell between different people's data by eye?
-
-
-### The neural network
+Of course, to start with, we need a model.
 
 ```{r}
-# Initiate the model - we'll use a sequential model so we can add to it
 model <- keras_model_sequential()
-
-# Start with a convolutional layer:
-#  * filters: The number of "features" we want to learn; number of patterns to try to identify
-#  * kernel_size: The "window" to consider, i.e. we look at a rolling window captuiring [kernel_size] time points at once
-#  * strides: How many time steps to "roll forward" each time we move the window
-#  * activation: The activation function to use; convolutional layers typically use REctified Linear Unit function
-#  * input_shape: We're feeding in observations each of shape 260{time points}*3{directional acceleration features}
-model %>%
-    layer_conv_1d(filters = 40, kernel_size = 30, strides = 2, activation = "relu", input_shape = c(260, 3)) %>%
-    layer_max_pooling_1d(pool_size = 2) %>%
-    layer_conv_1d(filters = 40, kernel_size = 10, activation = "relu") %>%
-    layer_max_pooling_1d(pool_size = 2) %>%
-    layer_flatten() %>%
-    layer_dense(units = 100, activation = "sigmoid") %>%
-    layer_dense(units = 15, activation = "softmax")
-
-model
 ```
+
+Our first layer is going to be a **convolutional layer**. Instead of looking at the whole set of features (timesteps) in one go, this layer looks at a moving "window" of features, so it's great for identifying patterns which are repeated, or pattern which appear often but in not necessarily in the same place every time.
+
+The "dimensionality" of the convolutional window depends on how we want to move this window, which depends on our data. Here, we have time series data, which we can move "along", forwards and backwards, in _one_ dimension; so we use 1D convolution. If we had images instead, we could move the window in _two_ dimensions (left-right and up-down), so it would make more sense to use 2D convolution.
+
+We need to pass some arguments into this convolutional layer:
+
+* `filters`: Like `units` in a dense layer - the number of "features" we want to learn, or number of patterns to try to identify.
+* `kernel_size`: The "window" we were just talking about is officially called a **kernel**. We use at a rolling window capturing `kernel_size` timesteps at once.
+* `strides`: How many time steps to "roll forward" each time we move the window. The larger we set it, the fewer snapshots of our series the kernel will see, so the fewer output neurons will be created.
+* `activation`: Just like in the dense layer earlier, except convolutional layers typically use the REctified Linear Unit activation function because it works well and is fast to train
+* `input_shape`: Remember, the first layer always needs an input shape so it knows what data it is expecting! This time, we're feeding in observations each of shape ({260 timesteps}, {3 directional acceleration channels})
+
+If we want to get fancy, we can call these arguments **hyperparameters** of our network. The **parameters** are hidden away inside the neurons in each layer, and they get updated during training. The hyperparameters are set by us, and control the shape and behaviour of the network.
 
 ```{r}
 model %>%
-    compile(loss = "categorical_crossentropy", optimizer = "adam", metrics = c("accuracy"))
+  layer_conv_1d(filters = 30, kernel_size = 40, strides = 2, activation = "relu", input_shape = c(260, 3))
 ```
+
+Next, we'll add a "subsampling" layer. This type of layer groups neurons up based on their position, and then combines them, thereby reducing the number of neurons that pass forward into the next layer.
+
+This has two main effects:
+* With fewer neurons, the number of _parameters_ in the following layers of the network is reduced; so there's less updating to be done after each batch, and the network will be less computationally-intensive (i.e. faster!) to train.
+* We reduce the chances of learning to recognise super-specific features (and then relying on them later on for our classifications), because we're combining bits and pieces from different neurons. This means our network should generalise better to making predictions on data outside our training set.
+
+We're using "max pooling" as our subsampling tactic, which just takes the strongest neuron from each "pool" (i.e. the one with the highest activation).
 
 ```{r}
-history <- model %>%
-    fit(X_train, y_train, epochs = 10, batch_size = 100, validation_data = list(X_val, y_val), verbose = 1)
+model %>%
+  layer_max_pooling_1d(pool_size = 2)
 ```
 
-At this point we could try to improve that cross-validation accuracy score, e.g. change network structure.
+But... _why_ have we just added a convolutional layer and then a pooling layer? Why didn't we add another convolutional layer first? Why did we pair neurons up, instead of combining 3 at a time?
+
+These are all valid questions.
+
+The fun, slightly artistic part of building a deep learning model is deciding which layers to add, how big to make them, which hyperparameters to adjust, how to adjust them, when to adjust them, ...
+
+There are a few common rules-of-thumb though. The conv-pool combo we've just seen is very common - convolutional layers add a load of new parameters to the model, and then pooling layers (or other subsampling layers, such as "dropout") strip the new neurons down and help prevent overfitting.
+
+We're going to add another conv-pool pair of layers to our model. The neurons in the first convolutional layer will learn to respond to patterns in our time series data. The neurons in the _second_ convolutional layer will learn to respond to patterns in the (pooled) output of the _first_ layer - so it's responding to _meta-patterns_ in the original data.
+
+```{r}
+model %>%
+  layer_conv_1d(filters = 40, kernel_size = 10, activation = "relu") %>%
+  layer_max_pooling_1d(pool_size = 2)
+```
+
+Let's pause for a moment and check the shape of the data which is coming out of the last layer of the network right now.
+
+```{r}
+model$output_shape
+```
+
+Notice anything?
+
+Yeah, it's still in 3D: some number of rows (which Keras represents with `None`, because we could feed in any number of observations!), some "features" (loosely related to our original timesteps, but twisted beyond recognition by the conv/pool layers), and some "filters" (the number which we set in the latest conv layer).
+
+But if we think about what we want to predict... that's in 2D! Some number of rows, where each one is a one-hot label.
+
+So we somehow need to _flatten_ our network by taking all those stacked-up parameters and laying them out next to each other in a big long line.
+
+This is Keras though, so it's easy to do that...
+
+```{r}
+model %>%
+  layer_flatten()
+```
+
+And now if we check the shape again:
+
+```{r}
+model$output_shape
+```
+
+We have the same size of output as before, just reshaped!
+
+Now we can finish off by feeding this into a couple of dense layers. The first one will learn relationships between the now-flattened convolutional neurons, and the second produces the (one-hot) prediction.
+
+```{r}
+model %>%
+  layer_dense(units = 100, activation = "sigmoid") %>%
+  layer_dense(units = 15, activation = "softmax")
+```
+
+Let's take a step back and admire our handiwork.
+
+```{r}
+summary(model)
+```
+
+Wow. Give yourself a pat on the back. That looks pretty darned good.
 
 
-## Reporting
 
+## Training and results
+
+Remember that before we can train our network, we have to compile it! This time is just like before, except we're going to use the faster fancier "ADAptive Movement estimation" optimizer instead of gradient descent.
+
+```{r}
+model %>%
+  compile(loss = "categorical_crossentropy", optimizer = "adam", metrics = c("accuracy"))
+```
+
+And now we fit the model on our training data - again, almost identical to last time, except we'll explicitly pass in our validation data rather than taking a split from the training data.
+
+```{r}
+model %>%
+  fit(X_train, y_train, epochs = 10, batch_size = 100, validation_data = list(X_val, y_val))
+```
+
+Not too shabby! Look at that lovely increase in validation-set accuracy. (But remember that it's the loss function that directs the training!)
+
+At this point we could try to improve that cross-validation accuracy score by changing the network structure, messing around with other layers, adjusting hyperparameters... and then once we're happy, we can assess the final performance of our model!
+
+First we can use our model to make predictions on the test set (which we haven't touched yet, because we've been saving it for exactly this purpose!).
 
 ```{r}
 y_pred <- model %>%
-    # For some reason, even though this is R, we predict classes between 0 and 14...
-    predict_classes(X_test)
+  predict_classes(X_test)
+```
 
+Then we can see how well we've done! But remember that our test labels are one-hot encoded. We can use `np.argmax()` to convert back to integer labels: we just need to look across the 1-axis (the columns, as opposed to the rows, which are the 0-axis) and pick the index of the highest value in each row (i.e. the position of the 1 among all the 0s).
 
-classification_report <- function(target, predictions) {
-    
-    # Confusion matrix
-    confusion <- table(Actual = target, Predicted = predictions)
+We can quickly create a confusion matrix using R's `table()` function; we want high values on the diagonal (indicating that our predicted labels, in the columns, match the actual values, in the rows). Remember that our labels start with 0, rather than 1; so we need to do the "and subtract 1" trick again, to convert the one-hot labels back into integers which match our predicted labels.
 
-    # Precision
-    precision <- diag(confusion) / colSums(confusion)
-
-    # Recall
-    recall <- diag(confusion) / rowSums(confusion)
-
-    # F1 score
-    f1 <- 2*precision*recall / (precision+recall)
-    
-    metrics <- data.frame("Precision" = precision,
-                          "Recall" = recall,
-                          "F1_score" = f1) %>%
-        round(4) %>%
-        rbind(c("---", "---", "---")) %>%
-        rbind(round(c(mean(precision), mean(recall), mean(f1)), 4))
-    
-    rownames(metrics) <- c(paste("Class", seq_along(f1)), "---", "Mean")
-    
-    list("performance_metrics" = metrics,
-         "confusion_matrix" = confusion)
-}
-
-
-classification_report(max.col(y_test) - 1, y_pred)
+```{r}
+table("Actual" = max.col(y_test) - 1, "Predicted" = y_pred)
 ```
 
 
+---
 
-## Visualising features
 
-We can try to visualise the "features" of the time series which the convolutional layers of the net have learned to identify.
+## Opening the black box
+
+
+We hope that during training, the neurons in the network will learn to respond to certain patterns in the data which they receive as input. A neuron will "respond" when its weights line up nicely with the input data - so by treating these weights as series in their own right, we can see what the input to each neuron which would produce the biggest response would look like.
+
+Extending our `plot_series()` function from earlier, we can use it to grab the weights from a particular neuron in a model, and then plot them as a time series.
 
 ```{r}
 plot_filter <- function(model, layer, k) {
-    
-    # Get weights from target filters in specified layer
-    weights <- get_weights(model$layers[[layer]])[[1]][, , k]
-    plot_series(weights)
+  weights <- get_weights(model$layers[[layer]])[[1]][, , k]
+  plot_series(weights)
 }
-
-
-model %>%
-    plot_filter(1, 1)
-
-model %>%
-    plot_filter(1, 12)
-
-# Up one more level of abstraction...
-model %>%
-    plot_filter(3, 1)
 ```
+
+For example, taking the 0th layer in our current model (the first convolutional layer), and looking at the fifth neuron in it:
+
+```{r}
+model %>%
+  plot_filter(1, 5)
+```
+
+There does seem to be some sort of pattern in there, but it's a little bit hard to tell.
+
+We can confirm our suspicions by producing an "autocorrelation plot". To calculate the autocorrelation, we take two copies of the series and line the end of one up with the start of the next. Then we slide one series over the top of the other. The closer the two series are to each other at a given point, the higher the correlation, with a perfect score of 1 at the point where the two copies are directly on top of each other. If there are repeating patterns in the series, we should see smooth curves in the autocorrelation plot, with peaks where the repeated patterns line up nicely with the original (like echos!).
+
+
 
 
 We can also see if there are any patterns in the autocorrelation plots which might suggest strong periodicity.
@@ -259,28 +410,34 @@ We can also see if there are any patterns in the autocorrelation plots which mig
 
 ```{r}
 plot_filter_corr <- function(model, layer, k) {
-    
-    weights <- get_weights(model$layers[[layer]])[[1]][, , k]
-
-    corrs <- apply(weights, 2, function(x) {
-        acf(x, lag.max = nrow(weights), plot = FALSE)[["acf"]]
-    })
-    
-    plot_series(corrs)
+  
+  weights <- get_weights(model$layers[[layer]])[[1]][, , k]
+  
+  corrs <- apply(weights, 2, function(x) {
+    acf(x, lag.max = nrow(weights), plot = FALSE)[["acf"]]
+  })
+  
+  plot_series(corrs)
 }
 
-    
+
 model %>%
-    plot_filter_corr(1, 1)
+  plot_filter_corr(1, 5)
 ```
 
+Nice! Let's see a few filters alongside their autocorrelation plots.
+
+![](images/corrs.png)
+
+This suggests that the neurons in the first convolutional layer have learned to recognise repeated patterns in the original time series. That's great! It means the neurons are most probably learning to recognise features that we would expect them to learn to recognise. And that's about as good as we can get when it comes to interpreting the features in black-box models like neural networks!
 
 
-```{r}
-model %>%
-    plot_filter(1, 1:6)
+---
 
-model %>%
-    plot_filter_corr(1, 1:6)
-```
 
+## Conv-clusion
+
+
+That's all we have time for here I'm afraid, but hopefully this has shown off some of the wonderful things which Keras (and deep learning in general) is capable of! Please do go away and look at this again, and make changes, and try things out, and break things, and figure out why they broke, and experiment some more, and keep learning!
+
+If you have questions about this workshop, Keras, neural networks or ML/data science in general - or if you just want a chat - you can get in touch with me at olj23@bath.ac.uk or on Twitter at @owenjonesuob. Thanks for your attention!
