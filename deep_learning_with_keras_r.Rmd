@@ -1,7 +1,7 @@
 ---
 title: "Deep learning with Keras"
-author: "Owen Jones | BathML | 3rd June 2018"
-output: html_notebook
+author: "Owen Jones | BathML"
+date: "3rd June 2018"
 ---
 
 
