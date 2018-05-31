@@ -168,6 +168,10 @@ Don't panic. We have:
 * Timesteps - each column corresponds to one timestep, and together they form a time series. In this case we have 260 timesteps, forming a time series representing 5 seconds of measurements (because the samples were made at 52Hz).
 * Channels - at each timestep there are three values, one for the acceleration measurement in each of the x, y and z directions.
 
+![](images/lines2array.png)
+
+![](images/data_array.gif)
+
 As an important first step, let's work out how to visualise this data.
 
 We'll plot one observation at a time. One observation is one "row" of our dataset, but remember that every "row" is 3 channels deep. We'll plot each channel individually but on the same graph...
@@ -244,6 +248,8 @@ model <- keras_model_sequential()
 ```
 
 Our first layer is going to be a **convolutional layer**. Instead of looking at the whole set of features (timesteps) in one go, this layer looks at a moving "window" of features, so it's great for identifying patterns which are repeated, or pattern which appear often but in not necessarily in the same place every time.
+
+![](images/convolution.gif)
 
 The "dimensionality" of the convolutional window depends on how we want to move this window, which depends on our data. Here, we have time series data, which we can move "along", forwards and backwards, in _one_ dimension; so we use 1D convolution. If we had images instead, we could move the window in _two_ dimensions (left-right and up-down), so it would make more sense to use 2D convolution.
 
